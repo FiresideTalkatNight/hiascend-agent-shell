@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "gitcode": {
+      "command": "gitcode-api",
+      "args": ["serve"],
+      "env": {
+        "GITCODE_ACCESS_TOKEN": "${GITCODE_ACCESS_TOKEN}"
+      },
+      "description": "GitCode REST API: repositories, forks, branches, contents, issues and pull requests"
+    }
+  }
+}
