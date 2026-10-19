@@ -1,3 +1,13 @@
+# Generated release inputs/outputs — never commit binaries.
+dist/
+build/
+vendor/
+*.tar.gz
+*.sha256
+
+# Local credentials and checkouts
 secrets/
-e2e/
 workspace/
+
+__pycache__/
+*.pyc

@@ -1,0 +1,6 @@
+{
+  "skills": ["__PREFIX__/current/config/skills"],
+  "prompts": ["__PREFIX__/current/config/prompts"],
+  "extensions": ["__PREFIX__/current/config/extensions"],
+  "defaultTools": ["+codemode"]
+}

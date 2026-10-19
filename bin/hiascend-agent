@@ -1,0 +1,53 @@
+#!/bin/sh
+# =============================================================================
+# hiascend-agent launcher
+#
+# Resolves the installed version directory, prepares PATH and Pi's config
+# directory, then runs Pi or a helper subcommand.
+#
+#   hiascend-agent [pi] [pi args...]   run Pi (default)
+#   hiascend-agent doctor              environment/resources self-check
+#   hiascend-agent shell               login shell with the agent PATH
+#   hiascend-agent gitcode-api ...     run the bundled gitcode-api CLI
+#   hiascend-agent version
+#   hiascend-agent uninstall [args]
+# =============================================================================
+set -eu
+
+SELF="$(readlink -f "$0")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+PREFIX="$(cd "$ROOT/.." && pwd)"
+
+export PATH="$ROOT/bin:$ROOT/venv/bin:$PATH"
+export GITCODE_API_BIN="${GITCODE_API_BIN:-$ROOT/venv/bin/gitcode-api}"
+export PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+
+usage() {
+	cat <<EOF
+hiascend-agent $(cat "$ROOT/VERSION" 2>/dev/null || echo '?') (Pi $(cat "$ROOT/PI_VERSION" 2>/dev/null || echo '?'))
+
+Usage:
+  hiascend-agent [pi] [args...]     start Pi (default)
+  hiascend-agent doctor             check the environment and bundled resources
+  hiascend-agent shell              login shell with the agent PATH
+  hiascend-agent gitcode-api ...    run the bundled gitcode-api CLI
+  hiascend-agent version            print the package version
+  hiascend-agent uninstall [args]   remove this installation
+
+Paths:
+  install : $PREFIX
+  config  : $PI_CODING_AGENT_DIR
+EOF
+}
+
+cmd="${1:-}"
+case "$cmd" in
+	doctor) exec "$ROOT/lib/doctor.sh" ;;
+	shell) shift; exec "${SHELL:-/bin/bash}" -l ;;
+	version) cat "$ROOT/VERSION" 2>/dev/null || echo unknown ;;
+	uninstall) shift; exec "$ROOT/uninstall.sh" "$@" ;;
+	gitcode-api) shift; exec "$ROOT/venv/bin/gitcode-api" "$@" ;;
+	help|-h|--help) usage ;;
+	pi) shift; exec "$ROOT/bin/pi" "$@" ;;
+	*) exec "$ROOT/bin/pi" "$@" ;;
+esac

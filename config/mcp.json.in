@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "gitcode": {
-      "command": "gitcode-api",
+      "command": "__PREFIX__/current/venv/bin/gitcode-api",
       "args": ["serve"],
       "env": {
         "GITCODE_ACCESS_TOKEN": "${GITCODE_ACCESS_TOKEN}"

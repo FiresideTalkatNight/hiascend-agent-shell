@@ -1,202 +1,157 @@
-# AGENTS.md — hiascend-agent-shell 开发指南
+# AGENTS.md — hiascend-agent 开发指南
 
-> 本文件面向**本镜像/工具的开发者与接手开发的 agent**，记录设计意图、目录结构、
-> 关键取舍与协作约定。
->
-> - 运行期 agent 的指令在 **`pi-defaults/AGENTS.md`**（会被注入容器的 `~/.pi/agent/`），
->   本文件与之不同、不要混淆。
-> - 面向使用者的文档在 **`README.md`**（不含开发/测试环境内容）。
-> - 第一阶段的过程与验证记录在仓库根的 **`../NOTES.md`**。
+> 面向**本部署包的开发者与接手开发的 agent**。使用者文档见 `README.md`。
+> 运行期 agent 的指令在 `config/AGENTS.md`（安装时合并进 `~/.pi/agent/`）。
 
 ---
 
-## 1. 项目目标与现状
+## 1. 目标与现状
 
-- **目标**：提供一个**交互式 agent shell 容器**，让 LLM agent（[Pi](https://pi.dev)）能够
-  自主操作 **GitCode**，完成 `fork → 拉取开发 → 推送 → 提 PR`，用于自动化「基于仓库的
-  工程任务」（例如算子开发任务 hccl4py 这类需要多仓、多 PR、含设计文档与测试代码的任务）。
-- **现状**：第一阶段**已完成并验证**——脚本驱动（`scripts/verify.sh`）与 LLM 驱动（真实模型）
-  两种模式下的完整闭环均通过。
-- **镜像**：`hiascend-agent-shell:latest`，构建上下文为 `work/`。
+- **目标**：为**无外网、root、x86_64 的 openEuler 环境**提供一条命令即可装好的
+  算子开发 agent shell：Pi + fd + ripgrep + gitcode-api + skills/prompts。
+- **形态**：源码仓库 + GitHub CI 产出的**可重定位 release 包**（不把二进制放进仓库）。
+- **现状**：install / 配置合并 / doctor / uninstall 已在 `openeuler/openeuler:24.03-lts`
+  **无网容器**中验证通过。
 
-### 后续方向（backlog）
+### 为什么不是 Docker 镜像
 
-- 叠加 **CANN/Ascend** 运行时层（A3/A5，CANN ≥ 9.2.0），支持真机编译/运行算子任务。
-- **多仓库/多 PR 编排**：设计文档 + 测试代码 + 功能代码，跨 `hccl`/`hcomm` 等仓。
-- **PR 迭代闭环**：读取评审意见与 CI 结果，自动修订并更新 PR。
-- 可选 **`permission-gate` 扩展**做风险命令确认；`linux/arm64` 构建；镜像瘦身。
+远程开发环境本身通常是平台给的容器（无 DinD/特权），NPU 驱动与 CANN 绑定宿主；
+因此以用户态安装包交付更稳。Docker 仅作为 CI 测试手段。
 
 ---
 
-## 2. 架构总览
-
-```
-┌───────────────────────────────────────────────────────────────┐
-│ node:24-bookworm-slim                                          │
-│  ├─ pi  (@earendil-works/pi-coding-agent, pinned)   agent      │
-│  ├─ git / git-lfs / openssh-client                  harness    │
-│  ├─ /opt/venv  →  gitcode-api[mcp] CLI + MCP server + uv       │
-│  ├─ /workspace                                       (非 root) │
-│  └─ entrypoint.sh  →  SSH key / git identity / Pi 配置 → exec  │
-└───────────────────────────────────────────────────────────────┘
-        ▲ mounts: ~/.ssh (volume) · ~/.pi/agent (config) · /workspace
-        ▲ env:    GITCODE_ACCESS_TOKEN · <PROVIDER>_API_KEY · GIT_AUTHOR_*
-```
-
-| 组件 | 作用 |
-|---|---|
-| Pi | agent harness（交互 TUI / `-p` 一次性 / JSON / RPC） |
-| git + openssh | clone / branch / commit / push（SSH） |
-| `gitcode-api[mcp]` | GitCode REST SDK、`gitcode-api` CLI、MCP server |
-| `gitcode` 扩展 | 原生 `gitcode_*` 工具 + `/gitcode` 命令（`pi-defaults/extensions/gitcode/`） |
-| `gitcode-api` skill | 完整 API/用法说明（`pi-defaults/skills/gitcode-api/`） |
-| `operator-dev` skill | 算子开发代码风格/评审/法务头/目录规范（`pi-defaults/skills/operator-dev/`） |
-| `/etc/pi/agent` | 系统级 Pi 配置层（settings/mcp/skills/prompts/extensions），启动时与用户层合并 |
-
----
-
-## 3. 目录结构
+## 2. 仓库结构（只放源码）
 
 ```
 work/
-├── Dockerfile                  # 镜像定义（本项目的核心产物）
-├── entrypoint.sh               # 运行期初始化：SSH / git / Pi 配置，再 exec CMD
-├── .dockerignore               # 排除 secrets / e2e / workspace / .git
-├── README.md                   # ★ 面向使用者（发布文档）
-├── AGENTS.md                   # ★ 本文件：面向开发者/agent
-├── run.sh                      # 便捷交互启动（docker run 包装）
-├── pi-defaults/                # 系统级 Pi 配置层 → 镜像内 /etc/pi/agent
-│   ├── AGENTS.md               #   运行期 agent 指令（GitCode 工作流）
-│   ├── mcp.json                #   gitcode MCP server（gitcode-api serve）
-│   ├── settings.json           #   系统资源绝对路径 + codemode；不设 provider/model
-│   ├── skills/                 #   目录形式 skill：gitcode-api/、operator-dev/
-│   ├── prompts/                #   提示词模板（*.md → /命令；README.txt 不会被加载）
-│   └── extensions/gitcode/     #   原生 GitCode 工具扩展
-│       ├── api.ts              #     gitcode-api CLI 封装（无 Pi 依赖，可独立测试）
-│       ├── index.ts            #     defineTool 注册工具 + /gitcode 命令
-│       └── selftest.ts         #     不依赖 LLM 的自测
-├── scripts/
-│   ├── smoke.sh                # 无凭据自检（当前 23 项）
-│   └── verify.sh               # 端到端 fork/push/PR 验证
-├── secrets/                    # 本地密钥，gitignore + dockerignore，绝不入镜像
-└── workspace/                  # 使用者的仓库检出（非本项目产物）
+├── install.sh                 # 安装器（校验/解包/venv/渲染配置/合并/自检）
+├── uninstall.sh               # 卸载（可选清理配置）
+├── bin/hiascend-agent         # 启动器（PATH/PI 目录/子命令）
+├── config/                    # 系统配置层（安装到 <prefix>/<ver>/config）
+│   ├── AGENTS.md              #   运行期 agent 指令
+│   ├── settings.json.in       #   含 __PREFIX__ 占位符
+│   ├── mcp.json.in            #   gitcode MCP server（绝对路径）
+│   ├── skills/                #   operator-dev/、gitcode-api/（目录形式）
+│   ├── prompts/               #   *.md → /命令（README 用 .txt）
+│   └── extensions/gitcode/    #   原生 GitCode 工具扩展
+├── lib/
+│   ├── merge-config.py        # 系统层 + 用户层合并（仅 stdlib）
+│   └── doctor.sh              # 环境/资源自检
+├── packaging/
+│   ├── versions.env           # 固定版本与 SHA256
+│   ├── build-release.sh       # 下载/校验/组装/打包
+│   └── test-in-container.sh   # openEuler 无网安装测试
+├── .github/workflows/release.yml
+├── README.md
+└── AGENTS.md
 ```
 
----
-
-## 4. 关键设计决策与「坑」
-
-1. **基镜像与 uid**：`node:24` 自带 `node`(uid/gid 1000)。为与宿主挂载目录的 uid 对齐，
-   构建时将其改名为 `agent`（`groupmod -n agent node` + `usermod -l agent … -m node`），
-   **不要**再新建 uid 1000 的用户（会冲突）。
-2. **Python 环境用 venv**：Debian 是 externally-managed。用 `python3 -m venv /opt/venv`
-   安装 `gitcode-api[mcp]` 与 `uv`；不要系统级 `pip install`。
-3. **登录 shell 会重置 PATH**：`/etc/profile` 覆盖 `PATH`，`bash -l` 下会丢掉
-   `/opt/venv/bin`。故镜像内加 `/etc/profile.d/00-agent-venv.sh` 重新前置 venv
-   （非登录 shell 由镜像 `ENV PATH` 覆盖）。
-4. **PID 1 用 tini**：`ENTRYPOINT ["/usr/bin/tini","--","/usr/local/bin/entrypoint.sh"]`，
-   避免僵尸进程并正确转发信号（agent 会频繁派生 git 子进程）。
-5. **命名卷 `.ssh` 归属**：Docker 初始化**空命名卷为 root**，uid 1000 无法写入。
-   镜像内预建 `install -d -m 700 -o agent -g agent /home/agent/.ssh`，空卷初始化时即继承
-   agent 归属；同时 entrypoint 对 `chmod`/`mkdir`/`ssh-keygen` 失败**容忍并告警**，不中止。
-6. **配置合并幂等**：系统层 `/etc/pi/agent` 与用户层 `~/.pi/agent` 在启动时合并
-   （详见第 13 条）。合并必须**幂等**、失败只告警不中止；用户配置优先。
-7. **凭据永不入镜像**：`GITCODE_ACCESS_TOKEN`、provider key 走环境变量/挂载；
-   SSH 私钥在容器内生成并存于卷；`secrets/` 同时在 `.gitignore` 与 `.dockerignore` 中。
-8. **扩展分层以便测试**：`api.ts` **不 import 任何 Pi 包**，因此可用纯 Node 跑
-   （Node 24 原生支持 TS 类型剥离）；`index.ts` 才依赖 `defineTool`/`Type`。
-   这是「无 LLM 也能验证」的关键。
-9. **用户扩展可解析全局 Pi 包**：pi 用 jiti 加载扩展，`@earendil-works/pi-coding-agent`
-   与 `typebox` 可解析，**无需**自带 `node_modules`。
-10. **`pulls create` 用专用 flag**：`--title/--head/--base` 是必填 flag，
-    `--set` 仅用于「没有对应 flag 的可选参数」。`head` 跨 fork 时为 `owner:branch`。
-11. **PR 需共同祖先**：分支应从 `upstream/$BASE` 拉出；**空上游仓**（无任何分支）无法接收 PR
-    （缺 base 分支），需先 seed 一个 base 分支。
-12. **无 LLM 验证扩展加载**：`pi --mode rpc` 发送 `{"type":"get_commands"}`，
-    输出含 `"name":"gitcode"` 即表示扩展工厂完整执行（工具注册成功）。
-13. **系统级配置层 `/etc/pi/agent` + 合并**：Pi 原生只有**用户级**（`~/.pi/agent`）与
-    **项目级**（`.pi/`）两层，没有 `/etc` 级。镜像新增系统层 `/etc/pi/agent`，entrypoint 启动时与用户层合并：
-    - `settings.json`：递归合并（**用户优先**）；`skills/prompts/extensions/themes/packages`
-      数组取**并集且用户在前**（同名资源用户胜出）；
-    - `mcp.json`：`mcpServers` 取并集（同名用户优先）；
-    - `AGENTS.md`：用户文件优先，**缺失时**才安装系统版本；
-    - skills/prompts/extensions 由 `settings.json` 里的**绝对路径**加载，因此镜像更新即时生效，
-      且**不再复制进用户配置**（避免陈旧副本）；
-    - 合并是幂等的：重复启动不会重复追加路径。
-    - **迁移注意**：旧版本曾把 skill/extension 复制进 `~/.pi/agent/`。若旧配置卷里仍有
-      `skills/{gitcode-api,operator-dev}` 或 `extensions/gitcode`，会与系统层同名冲突
-      （Pi 会告警并保留先发现的）。升级时删除这些旧副本即可。
+**仓库里不提交**：`dist/`、`build/`、`vendor/`、wheels、任何二进制。
 
 ---
 
-## 5. 构建与运行
+## 3. 发布包内容与安装流程
+
+```
+hiascend-agent-<pkgver>-linux-x86_64/
+├── install.sh / uninstall.sh / VERSION / PI_VERSION / versions.env / SHA256SUMS
+├── bin/hiascend-agent
+├── lib/{merge-config.py,doctor.sh}
+├── config/...
+└── vendor/
+    ├── pi/                    # Pi 1.1.0 standalone（pi/pi + assets）
+    ├── bin/{fd,rg}            # musl 静态二进制
+    └── wheels/                # gitcode-api[mcp]==1.3.4 + 依赖（cp311 manylinux x86_64）
+```
+
+安装：
+1. 校验 `SHA256SUMS`；
+2. 解包到 `<prefix>/<pkgver>`，建 `current` 软链；
+3. `python3.11 -m venv` + `pip install --no-index --find-links vendor/wheels gitcode-api[mcp]`；
+4. 渲染 `config/*.in`（`__PREFIX__` → 安装前缀）；
+5. `lib/merge-config.py` 合并到 `~/.pi/agent`（用户优先）；
+6. 写 `/usr/local/bin/hiascend-agent`；可选生成 SSH key / 设置 git 身份；
+7. 运行 doctor。
+
+启动器 `<prefix>/current/bin/hiascend-agent` 设置 `PATH`（`bin` + `venv/bin`）、
+`GITCODE_API_BIN`、`PI_CODING_AGENT_DIR`，再 exec Pi。
+
+---
+
+## 4. 关键设计决策
+
+1. **Pi 用官方 standalone 二进制**：环境里 Node/npm 不满足要求、dnf 也没有 pi；
+   standalone 直接绕开 Node，固定 1.1.0。
+2. **fd / ripgrep 用 musl 静态包**：不受 openEuler glibc 影响。
+3. **gitcode-api 完整保留**：离线 wheels（cp311 manylinux x86_64）随包分发；
+   无外网也能 `pip install --no-index`。
+4. **系统层 + 用户层合并**：`settings.json` 递归合并（用户优先，资源数组取并集）；
+   `mcp.json` 的 `mcpServers` 取并集；`AGENTS.md` 用户优先。
+5. **绝对路径 + `current` 软链**：skills/prompts/extensions 指向
+   `<prefix>/current/...`；升级只切软链，资源立即生效，不复制进用户目录。
+6. **`__PREFIX__` 渲染**：`settings.json.in` / `mcp.json.in` 在安装时替换前缀；
+   MCP 命令用绝对路径，不依赖 shell PATH。
+7. **无网优先**：安装默认不联网；只有 `--fetch` 才通过 `--ghproxy` 下载 Pi/fd/rg，
+   且逐个校验 SHA256。wheels 必须随包。
+8. **版本化前缀**：`<prefix>/<ver>` + `current`；可并存多个版本。
+9. **卸载顺序**：先算剩余版本/更新 `current`/删启动器，**最后**才 `rm -rf` 版本目录
+   （脚本可能正在该目录中运行）。
+10. **二进制不进仓库**：由 CI 下载并组装；仓库只保留源码与 `versions.env` 的 pin。
+
+---
+
+## 5. 构建与验证
 
 ```bash
-# 构建（在 work/ 目录）
-docker build -t hiascend-agent-shell:latest .
+# 构建 release 包（本机需 python3.11+pip 或 docker；可走 ghproxy）
+GHPROXY=https://ghproxy.com/ packaging/build-release.sh
 
-# 交互运行
-./run.sh                 # 进 bash
-./run.sh pi              # 直接进 Pi TUI
-./run.sh pi -p "…"       # 一次性提示
+# 在 openEuler 无网容器里安装、doctor、卸载
+packaging/test-in-container.sh
 ```
 
-挂载：`/home/agent/.ssh`（卷，SSH 身份）、`/home/agent/.pi/agent`（Pi 配置）、`/workspace`（代码）。
-环境：`GITCODE_ACCESS_TOKEN`、`<PROVIDER>_API_KEY`、`GIT_AUTHOR_NAME/EMAIL`、`AGENT_SHELL_QUIET`。
+`packaging/versions.env` 固定：
+Pi 1.1.0、fd 10.5.0、ripgrep 15.2.0、gitcode-api 1.3.4。
 
-> **开发沙箱**：本项目的开发环境是仓库根目录下的 QEMU Ubuntu 虚拟机
-> （见仓库根 `README.md` / `Makefile`）；宿主 `./work` 通过 9p 共享到 guest 的 `/work`，
-> 上述命令都在 guest 内执行。
+CI（`.github/workflows/release.yml`，tag `v*`）：
+build → 无网容器测试 → 上传 artifact → 创建 GitHub Release。
 
----
+### 已踩过的坑
 
-## 6. 验证
-
-| 级别 | 命令 | 依赖 | 说明 |
-|---|---|---|---|
-| Smoke | `bash scripts/smoke.sh` | 无凭据 | 构建 + 工具链 + 系统配置层 + 用户配置合并 + 扩展/skill 资源发现，当前 **29/29** |
-| 扩展自测 | `node /etc/pi/agent/extensions/gitcode/selftest.ts` | token | 走工具同一代码路径，输出 `SELFTEST_OK` |
-| 资源发现 | `pi --mode rpc` + `get_commands` | 无 | 应含 `"name":"gitcode"`、`"name":"skill:operator-dev"`、`"name":"skill:gitcode-api"` |
-| E2E | `SANDBOX_OWNER=<o> SANDBOX_REPO=<r> BASE_BRANCH=<b> bash scripts/verify.sh` | token + SSH | fork→clone→分支→commit→push→PR→校验；**会产生真实副作用** |
-
-新增/修改功能时：**先扩展 `smoke.sh` 的断言**，必要时更新 `selftest.ts`。
+- **9p/共享目录不允许 chown**：解包/复制用 `tar --no-same-owner`、
+  `cp -a --no-preserve=ownership`。
+- **openEuler 的 `sort` 不支持 `-V`**：脚本里只用可移植选项。
+- **不要在被执行脚本所在目录里 `rm -rf` 它**：卸载时把删除放到最后。
+- **`prompts/` 下所有直接 `.md` 都会变成命令**：说明文件用 `.txt`。
+- **skill 必须是 `<name>/SKILL.md` 且有 `name` + `description`**，否则 Pi 不加载。
+- **登录 shell 会重置 PATH**：启动器显式设置 PATH；不要依赖交互 shell 的环境。
 
 ---
 
-## 7. 协作约定
+## 6. 协作约定
 
-- **新增一个 GitCode 工具**：
-  1) 在 `pi-defaults/extensions/gitcode/api.ts` 加封装函数（保持无 Pi 依赖）；
-  2) 在 `index.ts` 用 `defineTool` 注册，命名 `gitcode_*`，补 `description` 与必要的
-     `promptGuidelines`；
-  3) 更新 `pi-defaults/AGENTS.md` 的工具清单与 `README.md` 的工具表；
-  4) 需要时扩展 `selftest.ts` / `smoke.sh`。
-- **新增 skill**：在 `pi-defaults/skills/<name>/SKILL.md` 建**目录形式**（不要用单文件）：
-  必须有 YAML frontmatter 的 `name`（小写+连字符）与 `description`（写清何时使用），
-  细则放 `references/`。系统层经 `settings.json` 绝对路径加载，无需改 entrypoint；
-  改完在 smoke 里断言 `skill:<name>` 出现。
-- **新增提示词模板**：放在 `pi-defaults/prompts/<name>.md`；文件名即命令名
-  （`<name>.md` → `/<name>`），可选 frontmatter `description` / `argument-hint`，
-  正文支持 `${1}`、`$@`、`${1:-默认}`。**注意**：该目录下所有直接 `.md` 都会被当作模板，
-  说明文件请用 `.txt`。
-- **新增 MCP server**：写进 `pi-defaults/mcp.json`，或在扩展里 `pi.registerMcpServer()`。
-- **文档边界**：`README.md` 面向使用者，**不要**写开发/测试环境相关内容；
-  `AGENTS.md`（本文件）面向开发者；过程记录写 `../NOTES.md`。
-- **密钥**：只放 `secrets/`（已被 git/docker ignore）；任何日志/输出都不得回显 token。
-- **保持 entrypoint 幂等且容错**：重复启动、只读挂载、缺失可选配置都不能让它失败。
-- **提交前自检**：`bash scripts/smoke.sh` 必须全绿。
+- **新增 skill**：`config/skills/<name>/SKILL.md`（目录形式），frontmatter 含
+  `name`/`description`；细则放 `references/`。改完在 `test-in-container.sh` 或
+  doctor 里断言 `skill:<name>` 被发现。
+- **新增提示词模板**：`config/prompts/<name>.md`；文件名即命令名；说明文件用 `.txt`。
+- **新增二进制**：只改 `packaging/versions.env` + `build-release.sh`，不要提交二进制。
+- **改合并语义**：只改 `lib/merge-config.py`，并补 `test-in-container.sh` 的断言。
+- **保持离线**：安装路径不得依赖网络；新增依赖必须进入 `vendor/`。
+- **文档边界**：`README.md` 面向使用者；本文件面向开发者。
 
 ---
 
-## 8. 快速索引
+## 7. 快速索引
 
 | 想做的事 | 去处 |
 |---|---|
-| 改镜像构成 / 依赖 / 用户 | `Dockerfile` |
-| 改首启行为（SSH/git/Pi 配置注入） | `entrypoint.sh` |
-| 加/改 GitCode 原生工具 | `pi-defaults/extensions/gitcode/{api,index}.ts` |
-| 改运行期 agent 指令 | `pi-defaults/AGENTS.md` |
-| 改默认 Pi 设置 / MCP | `pi-defaults/settings.json`、`pi-defaults/mcp.json` |
-| 加测试 | `scripts/smoke.sh`、`pi-defaults/extensions/gitcode/selftest.ts` |
-| 使用者文档 | `README.md` |
-| 阶段记录 / 决策日志 | `../NOTES.md` |
+| 改安装/升级/卸载行为 | `install.sh`、`uninstall.sh` |
+| 改启动器/PATH/子命令 | `bin/hiascend-agent` |
+| 改系统与用户配置合并 | `lib/merge-config.py` |
+| 改自检项 | `lib/doctor.sh` |
+| 改 skill / prompt | `config/skills/`、`config/prompts/` |
+| 改 GitCode 原生工具 | `config/extensions/gitcode/` |
+| 改固定版本/SHA | `packaging/versions.env` |
+| 改打包流程 | `packaging/build-release.sh` |
+| 改 CI | `.github/workflows/release.yml` |
+| 面向用户的说明 | `README.md` |
