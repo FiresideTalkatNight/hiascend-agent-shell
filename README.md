@@ -14,6 +14,8 @@ repository-based engineering tasks.
 | `gitcode-api[mcp]` | GitCode REST SDK, the `gitcode-api` CLI, and an MCP server |
 | `uv`, `python3` | on-demand Python tooling for the agent |
 | `gitcode` extension | native `gitcode_*` tools and the `/gitcode` command |
+| Built-in skills | `gitcode-api` (GitCode API) and `operator-dev` (Ascend C / CANN operator development) |
+| System config | `/etc/pi/agent` — Pi defaults, merged with your mounted `~/.pi/agent` at startup |
 
 Runs as non-root user **`agent`** (uid/gid 1000), with working directory
 `/workspace`.
@@ -58,7 +60,7 @@ environment and defaults to `$PWD/pi-agent`, `$PWD/workspace` and the
 | Container path | Purpose |
 |---|---|
 | `/home/agent/.ssh` | SSH identity + `known_hosts`. **Generated on first run**; keep it in a volume so the key stays stable. |
-| `/home/agent/.pi/agent` | Pi configuration: provider credentials, `settings.json`, `models.json`, `mcp.json`, skills, extensions, sessions. |
+| `/home/agent/.pi/agent` | Pi configuration (user layer): provider credentials, `settings.json`, `models.json`, `mcp.json`, your skills/extensions, sessions. Merged with the image's system layer at startup. |
 | `/workspace` | your repository checkout |
 
 ## Environment
@@ -118,15 +120,23 @@ pi -p "Fork cann/hccl into my namespace, create a branch, add docs/note.md, \
 
 ## Configuration
 
-- The image ships default Pi configuration — agent instructions, the GitCode MCP
-  server, the `gitcode` extension and the `gitcode-api` skill. Defaults are
-  copied into `/home/agent/.pi/agent` **only when the target does not already
-  exist**, so a mounted configuration directory always takes precedence.
+Pi configuration has two layers, merged at container startup:
+
+| Layer | Location | Contents |
+|---|---|---|
+| System (image) | `/etc/pi/agent` | agent instructions, default settings, the GitCode MCP server, built-in skills (`gitcode-api`, `operator-dev`), prompt templates, the `gitcode` extension |
+| User (yours) | `/home/agent/.pi/agent` | credentials, model overrides, your own skills/prompts/extensions, sessions |
+
+- `settings.json` and `mcp.json` are merged (your values win; resource lists are
+  unioned with your entries first). Your `AGENTS.md` takes precedence over the
+  system one.
+- System resources are loaded from `/etc/pi/agent` by absolute path, so image
+  upgrades apply immediately and are never copied into your configuration.
 - No provider or model is baked in. Supply credentials through environment
   variables or a mounted `~/.pi/agent` (`auth.json`, `models.json`), and select a
   model with `--model <provider>/<id>`.
-- The shipped `settings.json` enables the `codemode` tool (batch tool calls from
-  a script).
+- The shipped settings enable the `codemode` tool (batch tool calls from a
+  script).
 
 ## Security
 

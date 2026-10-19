@@ -9,14 +9,11 @@ description: |
   (4) Running bundled scripts to validate the environment or make simple CLI calls.
 metadata:
   version: "1.1.0"
-  {
-    "openclaw":
-      {
-        "emoji": "📦",
-        "requires": { "anyBins": ["python3", "python", "pip"] },
-        "primaryEnv": "GITCODE_ACCESS_TOKEN",
-      },
-  }
+  openclaw:
+    emoji: "📦"
+    requires:
+      anyBins: ["python3", "python", "pip"]
+    primaryEnv: "GITCODE_ACCESS_TOKEN"
 ---
 
 # GitCode API SDK

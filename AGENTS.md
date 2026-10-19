@@ -50,6 +50,8 @@
 | `gitcode-api[mcp]` | GitCode REST SDK、`gitcode-api` CLI、MCP server |
 | `gitcode` 扩展 | 原生 `gitcode_*` 工具 + `/gitcode` 命令（`pi-defaults/extensions/gitcode/`） |
 | `gitcode-api` skill | 完整 API/用法说明（`pi-defaults/skills/gitcode-api/`） |
+| `operator-dev` skill | 算子开发代码风格/评审/法务头/目录规范（`pi-defaults/skills/operator-dev/`） |
+| `/etc/pi/agent` | 系统级 Pi 配置层（settings/mcp/skills/prompts/extensions），启动时与用户层合并 |
 
 ---
 
@@ -63,11 +65,12 @@ work/
 ├── README.md                   # ★ 面向使用者（发布文档）
 ├── AGENTS.md                   # ★ 本文件：面向开发者/agent
 ├── run.sh                      # 便捷交互启动（docker run 包装）
-├── pi-defaults/                # 空配置目录时注入 ~/.pi/agent 的模板
+├── pi-defaults/                # 系统级 Pi 配置层 → 镜像内 /etc/pi/agent
 │   ├── AGENTS.md               #   运行期 agent 指令（GitCode 工作流）
 │   ├── mcp.json                #   gitcode MCP server（gitcode-api serve）
-│   ├── settings.json           #   默认开启 codemode，不设 provider/model
-│   ├── skills/gitcode-api/     #   来自 GitCode-API 仓库的 skill
+│   ├── settings.json           #   系统资源绝对路径 + codemode；不设 provider/model
+│   ├── skills/                 #   目录形式 skill：gitcode-api/、operator-dev/
+│   ├── prompts/                #   提示词模板（*.md → /命令；README.txt 不会被加载）
 │   └── extensions/gitcode/     #   原生 GitCode 工具扩展
 │       ├── api.ts              #     gitcode-api CLI 封装（无 Pi 依赖，可独立测试）
 │       ├── index.ts            #     defineTool 注册工具 + /gitcode 命令
@@ -96,8 +99,8 @@ work/
 5. **命名卷 `.ssh` 归属**：Docker 初始化**空命名卷为 root**，uid 1000 无法写入。
    镜像内预建 `install -d -m 700 -o agent -g agent /home/agent/.ssh`，空卷初始化时即继承
    agent 归属；同时 entrypoint 对 `chmod`/`mkdir`/`ssh-keygen` 失败**容忍并告警**，不中止。
-6. **配置注入幂等**：`/opt/pi-defaults` → `~/.pi/agent` 时**仅当目标不存在**才复制，
-   挂载的用户配置永远优先；对不可写挂载只告警不失败。
+6. **配置合并幂等**：系统层 `/etc/pi/agent` 与用户层 `~/.pi/agent` 在启动时合并
+   （详见第 13 条）。合并必须**幂等**、失败只告警不中止；用户配置优先。
 7. **凭据永不入镜像**：`GITCODE_ACCESS_TOKEN`、provider key 走环境变量/挂载；
    SSH 私钥在容器内生成并存于卷；`secrets/` 同时在 `.gitignore` 与 `.dockerignore` 中。
 8. **扩展分层以便测试**：`api.ts` **不 import 任何 Pi 包**，因此可用纯 Node 跑
@@ -111,6 +114,18 @@ work/
     （缺 base 分支），需先 seed 一个 base 分支。
 12. **无 LLM 验证扩展加载**：`pi --mode rpc` 发送 `{"type":"get_commands"}`，
     输出含 `"name":"gitcode"` 即表示扩展工厂完整执行（工具注册成功）。
+13. **系统级配置层 `/etc/pi/agent` + 合并**：Pi 原生只有**用户级**（`~/.pi/agent`）与
+    **项目级**（`.pi/`）两层，没有 `/etc` 级。镜像新增系统层 `/etc/pi/agent`，entrypoint 启动时与用户层合并：
+    - `settings.json`：递归合并（**用户优先**）；`skills/prompts/extensions/themes/packages`
+      数组取**并集且用户在前**（同名资源用户胜出）；
+    - `mcp.json`：`mcpServers` 取并集（同名用户优先）；
+    - `AGENTS.md`：用户文件优先，**缺失时**才安装系统版本；
+    - skills/prompts/extensions 由 `settings.json` 里的**绝对路径**加载，因此镜像更新即时生效，
+      且**不再复制进用户配置**（避免陈旧副本）；
+    - 合并是幂等的：重复启动不会重复追加路径。
+    - **迁移注意**：旧版本曾把 skill/extension 复制进 `~/.pi/agent/`。若旧配置卷里仍有
+      `skills/{gitcode-api,operator-dev}` 或 `extensions/gitcode`，会与系统层同名冲突
+      （Pi 会告警并保留先发现的）。升级时删除这些旧副本即可。
 
 ---
 
@@ -139,9 +154,9 @@ docker build -t hiascend-agent-shell:latest .
 
 | 级别 | 命令 | 依赖 | 说明 |
 |---|---|---|---|
-| Smoke | `bash scripts/smoke.sh` | 无凭据 | 构建 + 工具链 + entrypoint 首启行为 + 扩展加载，当前 **23/23** |
-| 扩展自测 | `node ~/.pi/agent/extensions/gitcode/selftest.ts` | token | 走工具同一代码路径，输出 `SELFTEST_OK` |
-| 扩展加载 | `pi --mode rpc` + `get_commands` | 无 | 输出含 `"name":"gitcode"` |
+| Smoke | `bash scripts/smoke.sh` | 无凭据 | 构建 + 工具链 + 系统配置层 + 用户配置合并 + 扩展/skill 资源发现，当前 **29/29** |
+| 扩展自测 | `node /etc/pi/agent/extensions/gitcode/selftest.ts` | token | 走工具同一代码路径，输出 `SELFTEST_OK` |
+| 资源发现 | `pi --mode rpc` + `get_commands` | 无 | 应含 `"name":"gitcode"`、`"name":"skill:operator-dev"`、`"name":"skill:gitcode-api"` |
 | E2E | `SANDBOX_OWNER=<o> SANDBOX_REPO=<r> BASE_BRANCH=<b> bash scripts/verify.sh` | token + SSH | fork→clone→分支→commit→push→PR→校验；**会产生真实副作用** |
 
 新增/修改功能时：**先扩展 `smoke.sh` 的断言**，必要时更新 `selftest.ts`。
@@ -156,7 +171,14 @@ docker build -t hiascend-agent-shell:latest .
      `promptGuidelines`；
   3) 更新 `pi-defaults/AGENTS.md` 的工具清单与 `README.md` 的工具表；
   4) 需要时扩展 `selftest.ts` / `smoke.sh`。
-- **新增 skill**：把含 `SKILL.md` 的目录放进 `pi-defaults/skills/`（entrypoint 会注入）。
+- **新增 skill**：在 `pi-defaults/skills/<name>/SKILL.md` 建**目录形式**（不要用单文件）：
+  必须有 YAML frontmatter 的 `name`（小写+连字符）与 `description`（写清何时使用），
+  细则放 `references/`。系统层经 `settings.json` 绝对路径加载，无需改 entrypoint；
+  改完在 smoke 里断言 `skill:<name>` 出现。
+- **新增提示词模板**：放在 `pi-defaults/prompts/<name>.md`；文件名即命令名
+  （`<name>.md` → `/<name>`），可选 frontmatter `description` / `argument-hint`，
+  正文支持 `${1}`、`$@`、`${1:-默认}`。**注意**：该目录下所有直接 `.md` 都会被当作模板，
+  说明文件请用 `.txt`。
 - **新增 MCP server**：写进 `pi-defaults/mcp.json`，或在扩展里 `pi.registerMcpServer()`。
 - **文档边界**：`README.md` 面向使用者，**不要**写开发/测试环境相关内容；
   `AGENTS.md`（本文件）面向开发者；过程记录写 `../NOTES.md`。
@@ -175,6 +197,6 @@ docker build -t hiascend-agent-shell:latest .
 | 加/改 GitCode 原生工具 | `pi-defaults/extensions/gitcode/{api,index}.ts` |
 | 改运行期 agent 指令 | `pi-defaults/AGENTS.md` |
 | 改默认 Pi 设置 / MCP | `pi-defaults/settings.json`、`pi-defaults/mcp.json` |
-| 加测试 | `scripts/smoke.sh`、`extensions/gitcode/selftest.ts` |
+| 加测试 | `scripts/smoke.sh`、`pi-defaults/extensions/gitcode/selftest.ts` |
 | 使用者文档 | `README.md` |
 | 阶段记录 / 决策日志 | `../NOTES.md` |

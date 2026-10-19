@@ -71,10 +71,11 @@ RUN groupmod -n agent node \
  && install -d -m 700 -o agent -g agent /home/agent/.ssh \
  && chown -R agent:agent /home/agent /workspace
 
-# --- Pi default config template ----------------------------------------------
-# Injected into an *empty* ~/.pi/agent at first run (see entrypoint.sh); a
-# mounted config directory always wins.
-COPY pi-defaults/ /opt/pi-defaults/
+# --- Pi system configuration layer -------------------------------------------
+# Shipped at /etc/pi/agent and merged with the user's ~/.pi/agent at startup
+# (see entrypoint.sh). Skills/prompts/extensions are referenced by absolute path
+# from settings.json, so image updates apply without touching user config.
+COPY pi-defaults/ /etc/pi/agent/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

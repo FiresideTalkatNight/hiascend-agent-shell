@@ -4,7 +4,7 @@
 #
 # Prepares, in order:
 #   1. an SSH identity for gitcode.com   (generated on first run, printed)
-#   2. the Pi config directory           (defaults injected if the mount is empty)
+#   2. the Pi configuration              (/etc/pi/agent merged into ~/.pi/agent)
 #   3. the git identity                  (from env, with sane defaults)
 #   ...then execs the container CMD (default: bash; pass `pi` for the TUI).
 #
@@ -15,7 +15,7 @@ set -euo pipefail
 AGENT_HOME="${HOME:-/home/agent}"
 PI_DIR="${PI_CODING_AGENT_DIR:-$AGENT_HOME/.pi/agent}"
 SSH_DIR="$AGENT_HOME/.ssh"
-DEFAULTS="/opt/pi-defaults"
+SYSTEM_DIR="/etc/pi/agent"
 GITCODE_HOST="${GITCODE_SSH_HOST:-gitcode.com}"
 
 log() { printf '\033[36m[agent-shell]\033[0m %s\n' "$*" >&2; }
@@ -54,38 +54,56 @@ CFG
 fi
 chmod 600 "$SSH_DIR/config" 2>/dev/null || true
 
-# --- 2. Pi config ------------------------------------------------------------
-# Tolerant of a mounted directory the user cannot write: warn, never abort.
+# --- 2. Pi configuration: system layer + user layer (merged) -----------------
+# System defaults live at /etc/pi/agent (baked into the image). The user's agent
+# directory ($PI_DIR) stays writable and is commonly a mount. We merge:
+#   settings.json : recursive merge, user wins; resource arrays are unioned
+#                   (user first, so a user resource wins name collisions)
+#   mcp.json      : mcpServers union, user wins per server name
+#   AGENTS.md     : user file wins; the system one is only installed when absent
+# Skills/prompts/extensions are referenced by absolute path in settings.json,
+# so they always reflect the image and are never copied into user state.
 mkdir -p "$PI_DIR" 2>/dev/null || true
-if [ -d "$DEFAULTS" ]; then
-  for f in AGENTS.md mcp.json settings.json; do
-    if [ -f "$DEFAULTS/$f" ] && [ ! -e "$PI_DIR/$f" ]; then
-      cp "$DEFAULTS/$f" "$PI_DIR/$f" 2>/dev/null \
-        || log "warning: cannot write $PI_DIR/$f (skipped)"
-    fi
-  done
-  if [ -d "$DEFAULTS/skills" ]; then
-    mkdir -p "$PI_DIR/skills" 2>/dev/null || true
-    for d in "$DEFAULTS"/skills/*/; do
-      [ -d "$d" ] || continue
-      name="$(basename "$d")"
-      if [ ! -e "$PI_DIR/skills/$name" ]; then
-        cp -r "$d" "$PI_DIR/skills/$name" 2>/dev/null \
-          || log "warning: cannot write $PI_DIR/skills/$name (skipped)"
-      fi
-    done
+
+merge_json() {
+  # merge_json <system-file> <user-file> <jq-filter>
+  local sys="$1" usr="$2" filter="$3" merged
+  [ -f "$sys" ] || return 0
+  if [ ! -f "$usr" ]; then
+    cp "$sys" "$usr" 2>/dev/null || log "warning: cannot write $usr (skipped)"
+    return 0
   fi
-  if [ -d "$DEFAULTS/extensions" ]; then
-    mkdir -p "$PI_DIR/extensions" 2>/dev/null || true
-    for d in "$DEFAULTS"/extensions/*/; do
-      [ -d "$d" ] || continue
-      name="$(basename "$d")"
-      if [ ! -e "$PI_DIR/extensions/$name" ]; then
-        cp -r "$d" "$PI_DIR/extensions/$name" 2>/dev/null \
-          || log "warning: cannot write $PI_DIR/extensions/$name (skipped)"
-      fi
-    done
+  if ! merged="$(jq -s "$filter" "$sys" "$usr" 2>/dev/null)"; then
+    log "warning: cannot merge $usr (invalid JSON?); keeping the user file"
+    return 0
   fi
+  if printf '%s\n' "$merged" >"$usr.tmp" 2>/dev/null && mv "$usr.tmp" "$usr" 2>/dev/null; then
+    :
+  else
+    rm -f "$usr.tmp" 2>/dev/null || true
+    log "warning: cannot write $usr (read-only mount?); merge skipped"
+  fi
+}
+
+merge_json "$SYSTEM_DIR/settings.json" "$PI_DIR/settings.json" '
+  def uq: reduce .[] as $x ([]; if any(.[]; . == $x) then . else . + [$x] end);
+  .[0] as $sys | .[1] as $usr |
+  ($sys * $usr)
+  | .skills     = ((($usr.skills     // []) + ($sys.skills     // [])) | uq)
+  | .prompts    = ((($usr.prompts    // []) + ($sys.prompts    // [])) | uq)
+  | .extensions = ((($usr.extensions // []) + ($sys.extensions // [])) | uq)
+  | .themes     = ((($usr.themes     // []) + ($sys.themes     // [])) | uq)
+  | .packages   = ((($usr.packages   // []) + ($sys.packages   // [])) | uq)
+'
+
+merge_json "$SYSTEM_DIR/mcp.json" "$PI_DIR/mcp.json" '
+  .[0] as $sys | .[1] as $usr |
+  { mcpServers: (($sys.mcpServers // {}) + ($usr.mcpServers // {})) }
+'
+
+if [ -f "$SYSTEM_DIR/AGENTS.md" ] && [ ! -e "$PI_DIR/AGENTS.md" ]; then
+  cp "$SYSTEM_DIR/AGENTS.md" "$PI_DIR/AGENTS.md" 2>/dev/null \
+    || log "warning: cannot write $PI_DIR/AGENTS.md (skipped)"
 fi
 
 # --- 3. git identity ---------------------------------------------------------

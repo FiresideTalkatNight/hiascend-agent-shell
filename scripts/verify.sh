@@ -134,7 +134,7 @@ exec_in "gitcode-api pulls list --owner '$SANDBOX_OWNER' --repo '$SANDBOX_REPO' 
 
 say "gitcode extension selftest (same code path as the Pi tools)"
 exec_in "GITCODE_SELFTEST_OWNER='$SANDBOX_OWNER' GITCODE_SELFTEST_REPO='$SANDBOX_REPO' \
-  node /home/agent/.pi/agent/extensions/gitcode/selftest.ts"
+  node /etc/pi/agent/extensions/gitcode/selftest.ts"
 
 say "done"
 echo "fork   : https://gitcode.com/$ME/$SANDBOX_REPO"

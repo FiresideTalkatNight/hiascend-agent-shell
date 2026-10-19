@@ -1,3 +1,6 @@
 {
+  "skills": ["/etc/pi/agent/skills"],
+  "prompts": ["/etc/pi/agent/prompts"],
+  "extensions": ["/etc/pi/agent/extensions"],
   "defaultTools": ["+codemode"]
 }
