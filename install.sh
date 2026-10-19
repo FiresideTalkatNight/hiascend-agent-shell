@@ -178,16 +178,34 @@ printf '%s\n' "$PKG_VERSION" >"$VDIR/VERSION"
 printf '%s\n' "$PI_VERSION" >"$VDIR/PI_VERSION"
 chmod 0755 "$VDIR/install.sh" "$VDIR/uninstall.sh" "$VDIR/bin/hiascend-agent" "$VDIR/lib/doctor.sh"
 
-# --- Python environment (offline) -------------------------------------------
+# --- Python environment (offline, isolated from the system) ------------------
 log "creating Python environment"
-if ! "$PYTHON" -m venv "$VDIR/venv" >/dev/null 2>&1; then
-	"$PYTHON" -m venv --without-pip "$VDIR/venv"
-	"$VDIR/venv/bin/python" -m ensurepip --upgrade >/dev/null 2>&1 \
+# Ignore PYTHONPATH/PYTHONHOME and user site so CANN/system packages do not leak
+# into the bundled environment (pip would otherwise report dependency conflicts).
+run_py() { env -u PYTHONPATH -u PYTHONHOME "$PYTHON" -I "$@"; }
+if ! run_py -m venv "$VDIR/venv" >/dev/null 2>&1; then
+	run_py -m venv --without-pip "$VDIR/venv"
+	env -u PYTHONPATH -u PYTHONHOME "$VDIR/venv/bin/python" -I -m ensurepip --upgrade >/dev/null 2>&1 \
 		|| die "cannot bootstrap pip in $VDIR/venv"
 fi
-"$VDIR/venv/bin/python" -m pip install --disable-pip-version-check --no-index \
+
+PIP_LOG="$VDIR/pip-install.log"
+if ! env -u PYTHONPATH -u PYTHONHOME "$VDIR/venv/bin/python" -I -m pip install \
+	--isolated --disable-pip-version-check --no-index --quiet \
 	--find-links "$WHEELS_DIR" "gitcode-api[mcp]==${GITCODE_API_VERSION:-1.3.4}" \
-	|| die "offline installation of gitcode-api failed"
+	>"$PIP_LOG" 2>&1; then
+	tail -n 40 "$PIP_LOG" >&2
+	die "offline installation of gitcode-api failed (log: $PIP_LOG)"
+fi
+rm -f "$PIP_LOG"
+
+# Run the bundled CLI with -I so the user's PYTHONPATH/CANN packages cannot
+# leak into this environment at run time either.
+cat >"$VDIR/venv/bin/gitcode-api" <<EOF
+#!/bin/sh
+exec "$VDIR/venv/bin/python" -I -m gitcode_api "\$@"
+EOF
+chmod 0755 "$VDIR/venv/bin/gitcode-api"
 
 # --- render configuration ----------------------------------------------------
 log "rendering configuration for prefix $PREFIX"
@@ -225,7 +243,8 @@ if [ "$NO_SSH_KEYGEN" = 0 ]; then
 	chmod 700 "$SSH_DIR" 2>/dev/null || true
 	if [ ! -f "$SSH_DIR/id_ed25519" ]; then
 		if command -v ssh-keygen >/dev/null 2>&1; then
-			ssh-keygen -t ed25519 -N '' -C "hiascend-agent@$(hostname)" -f "$SSH_DIR/id_ed25519" >/dev/null
+			ssh-keygen -t ed25519 -N '' -C "hiascend-agent@$(uname -n 2>/dev/null || echo unknown)" \
+				-f "$SSH_DIR/id_ed25519" >/dev/null
 			log "generated SSH key: $SSH_DIR/id_ed25519"
 		else
 			warn "ssh-keygen not found; skipping SSH key generation"

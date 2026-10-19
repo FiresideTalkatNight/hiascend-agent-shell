@@ -102,7 +102,13 @@ fi
 
 section "Ascend / CANN (informational)"
 if have npu-smi; then ok "npu-smi available"; else warn "npu-smi not found (tests need the NPU environment)"; fi
-if [ -n "${ASCEND_HOME:-}" ]; then ok "ASCEND_HOME=$ASCEND_HOME"; else warn "ASCEND_HOME is not set"; fi
+if [ -n "${ASCEND_HOME:-}" ]; then
+	ok "ASCEND_HOME=$ASCEND_HOME"
+elif [ -d /usr/local/Ascend/ascend-toolkit ] || [ -d /usr/local/Ascend/latest ]; then
+	ok "CANN toolkit found under /usr/local/Ascend (ASCEND_HOME not set)"
+else
+	warn "ASCEND_HOME is not set and no CANN toolkit found under /usr/local/Ascend"
+fi
 
 printf '\n\033[1m== summary ==\033[0m\n  passed: %d\n  warnings: %d\n  failed: %d\n' "$PASS" "$WARN" "$FAIL"
 [ "$FAIL" -eq 0 ]

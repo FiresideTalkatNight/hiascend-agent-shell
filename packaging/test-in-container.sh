@@ -33,8 +33,15 @@ echo "-- pre-seed a user config (must be preserved) --"
 mkdir -p /root/.pi/agent
 printf "%s\n" "{\"theme\":\"keep-me\",\"skills\":[\"/root/my-skills\"]}" > /root/.pi/agent/settings.json
 
+echo "-- simulate CANN packages leaking through PYTHONPATH --"
+mkdir -p /tmp/fake/site-packages/fake_pkg-1.0.dist-info
+printf "Metadata-Version: 2.1\nName: fake-pkg\nVersion: 1.0\nRequires-Dist: missing-dep\n" \
+  > /tmp/fake/site-packages/fake_pkg-1.0.dist-info/METADATA
+export PYTHONPATH=/tmp/fake/site-packages
+
 echo "-- install --"
 cd /pkg
+PKG_VER="$(cat VERSION)"
 ./install.sh --prefix /opt/hiascend-agent --no-ssh-keygen --no-git-config --no-doctor
 
 echo "-- idempotent re-install --"
@@ -47,6 +54,7 @@ grep -q /opt/hiascend-agent/current/config/skills /root/.pi/agent/settings.json
 test -x /opt/hiascend-agent/current/bin/pi
 test -x /usr/local/bin/hiascend-agent
 hiascend-agent pi --version
+hiascend-agent gitcode-api --version
 
 echo "-- doctor --"
 hiascend-agent doctor
@@ -56,7 +64,7 @@ hiascend-agent version
 
 echo "-- uninstall --"
 hiascend-agent uninstall
-test ! -e /opt/hiascend-agent/0.1.0
+test ! -e "/opt/hiascend-agent/${PKG_VER}"
 test ! -e /usr/local/bin/hiascend-agent
 echo "ALL CHECKS PASSED"
 '
